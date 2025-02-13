@@ -1,29 +1,365 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
+using DG.Tweening;
+using System.Collections;
 
 public class EnemyBase : MonoBehaviour
 {
+    [Space]
+    [Header("Components")]
+    [SerializeField] private Animator anim;
+    [SerializeField] private NavMeshAgent agent;
+    [SerializeField] private Rigidbody rb;
 
-    [SerializeField] private GameObject hitVfx;
-    [SerializeField] private GameObject activeTargetObject;
+    [Space]
+    [Header("Combat")]
+    [SerializeField] private Transform attackPos;
+    [SerializeField] private float attackRange = 1f;
+    [SerializeField] private float detectionRange = 10f;
+    [SerializeField] private float attackCooldown = 1.5f;
+    [SerializeField] private float rotationSpeed = 15f;
+    [SerializeField] private LayerMask playerLayer;
+    [SerializeField] private int quickAttackDamage = 10;
+    [SerializeField] private int heavyAttackDamage = 20;
 
-    // Start is called before the first frame update
-    void Start()
+    [Space]
+    [Header("Debug")]
+    [SerializeField] private bool showDebugLogs = true;
+    [SerializeField] private bool showAnimationLogs = true;
+    [SerializeField] private bool showCombatLogs = true;
+    [SerializeField] private Color debugTextColor = Color.yellow;
+
+    [Space]
+    [Header("Combat Effects")]
+    [SerializeField] private GameObject hitEffectPrefab;
+    [SerializeField] private GameObject targetIndicator;
+
+    // Private variables
+    private Transform player;
+    private PlayerHealth playerHealth;
+    private bool isAttacking;
+    private bool isDead;
+    private float lastAttackTime;
+    private bool isTargeted;
+    private string currentAnimationState = "Idle";
+
+    private void Start()
     {
-        ActiveTarget(false);
+        InitializeComponents();
     }
 
-  
-    public void SpawnHitVfx(Vector3 Pos_)
+    private void InitializeComponents()
     {
-        Instantiate(hitVfx, Pos_, Quaternion.identity);
+        if (!anim) anim = GetComponent<Animator>();
+        if (!agent) agent = GetComponent<NavMeshAgent>();
+        if (!rb) rb = GetComponent<Rigidbody>();
+
+        player = GameObject.FindGameObjectWithTag("Player").transform;
+        if (player == null && showDebugLogs)
+        {
+            Debug.LogError($"<color=red>[{gameObject.name}] Player not found! Make sure player has 'Player' tag.</color>");
+        }
+
+        playerHealth = player?.GetComponent<PlayerHealth>();
+        if (playerHealth == null && showDebugLogs)
+        {
+            Debug.LogError($"<color=red>[{gameObject.name}] PlayerHealth component not found on player!</color>");
+        }
+
+        if (targetIndicator) targetIndicator.SetActive(false);
+
+        if (showDebugLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Initialized with:" +
+                $"\n- Attack Range: {attackRange}" +
+                $"\n- Detection Range: {detectionRange}" +
+                $"\n- Attack Cooldown: {attackCooldown}" +
+                $"\n- Quick Attack Damage: {quickAttackDamage}" +
+                $"\n- Heavy Attack Damage: {heavyAttackDamage}</color>");
+        }
     }
 
-    public void ActiveTarget(bool bool_)
+    private void Update()
     {
-        activeTargetObject.SetActive(bool_);
+        if (isDead) return;
+
+        float distanceToPlayer = Vector3.Distance(transform.position, player.position);
+
+        if (showDebugLogs && showCombatLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Distance to player: {distanceToPlayer:F2}, " +
+                $"Can Attack: {!isAttacking && Time.time >= lastAttackTime + attackCooldown}, " +
+                $"Time until next attack: {Mathf.Max(0, (lastAttackTime + attackCooldown) - Time.time):F2}</color>");
+        }
+
+        if (distanceToPlayer <= detectionRange)
+        {
+            if (distanceToPlayer <= attackRange && !isAttacking && Time.time >= lastAttackTime + attackCooldown)
+            {
+                StopMoving();
+                PerformRandomAttack();
+            }
+            else if (!isAttacking)
+            {
+                ChasePlayer();
+            }
+        }
+        else
+        {
+            StopMoving();
+        }
     }
 
+    private void ChasePlayer()
+    {
+        agent.isStopped = false;
+        agent.SetDestination(player.position);
+        anim.SetFloat("Speed", agent.velocity.magnitude);
 
+        if (showDebugLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Chasing player, " +
+                $"Speed: {agent.velocity.magnitude:F2}</color>");
+        }
+    }
+
+    private void StopMoving()
+    {
+        agent.isStopped = true;
+        anim.SetFloat("Speed", 0);
+
+        if (showDebugLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Stopped moving</color>");
+        }
+    }
+
+    private void PerformRandomAttack()
+    {
+        isAttacking = true;
+        lastAttackTime = Time.time;
+
+        RotateTowardsTarget(player.position);
+
+        bool isHeavyAttack = Random.value >= 0.7f;
+        if (isHeavyAttack)
+        {
+            PerformHeavyAttack();
+        }
+        else
+        {
+            PerformQuickAttack();
+        }
+
+        if (showDebugLogs && showCombatLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Performing {(isHeavyAttack ? "Heavy" : "Quick")} Attack</color>");
+        }
+    }
+
+    private void PerformQuickAttack()
+    {
+        int attackIndex = Random.Range(1, 4);
+        string attackName = "";
+
+        switch (attackIndex)
+        {
+            case 1:
+                anim.SetBool("punch", true);
+                attackName = "Punch";
+                break;
+            case 2:
+                anim.SetBool("kick", true);
+                attackName = "Kick";
+                break;
+            case 3:
+                anim.SetBool("mmakick", true);
+                attackName = "MMA Kick";
+                break;
+        }
+
+        if (showDebugLogs && showAnimationLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Playing {attackName} animation</color>");
+        }
+    }
+
+    private void PerformHeavyAttack()
+    {
+        int attackIndex = Random.Range(1, 3);
+        string attackName = $"Heavy Attack {attackIndex}";
+
+        switch (attackIndex)
+        {
+            case 1:
+                anim.SetBool("heavyAttack1", true);
+                break;
+            case 2:
+                anim.SetBool("heavyAttack2", true);
+                break;
+        }
+
+        if (showDebugLogs && showAnimationLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Playing {attackName} animation</color>");
+        }
+    }
+
+    private void RotateTowardsTarget(Vector3 targetPosition)
+    {
+        Vector3 direction = (targetPosition - transform.position).normalized;
+        direction.y = 0;
+
+        if (direction != Vector3.zero)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(direction);
+            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime * rotationSpeed);
+
+            if (showDebugLogs)
+            {
+                Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                    $"Rotating towards player, angle: {Quaternion.Angle(transform.rotation, targetRotation):F2}</color>");
+            }
+        }
+    }
+
+    public void PerformAttack()
+    {
+        if (showDebugLogs && showCombatLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Checking for hits within range {attackRange}</color>");
+        }
+
+        Collider[] hitPlayers = Physics.OverlapSphere(attackPos.position, attackRange, playerLayer);
+
+        foreach (Collider playerCol in hitPlayers)
+        {
+            if (playerCol.TryGetComponent(out PlayerHealth health))
+            {
+                int damage = anim.GetBool("heavyAttack1") || anim.GetBool("heavyAttack2")
+                    ? heavyAttackDamage
+                    : quickAttackDamage;
+
+                health.TakeDamage(damage);
+                SpawnHitEffect(playerCol.transform.position);
+
+                if (showDebugLogs && showCombatLogs)
+                {
+                    Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                        $"Hit player for {damage} damage!</color>");
+                }
+            }
+        }
+    }
+
+    public void ResetAttack()
+    {
+        anim.SetBool("punch", false);
+        anim.SetBool("kick", false);
+        anim.SetBool("mmakick", false);
+        anim.SetBool("heavyAttack1", false);
+        anim.SetBool("heavyAttack2", false);
+        isAttacking = false;
+
+        if (showDebugLogs && showAnimationLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Reset all attack animations</color>");
+        }
+    }
+
+    public void TakeDamage(int damage)
+    {
+        if (showDebugLogs && showCombatLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Took {damage} damage!</color>");
+        }
+
+        anim.SetTrigger("Hit");
+        SpawnHitVfx(transform.position);
+    }
+
+    public void Die()
+    {
+        isDead = true;
+        agent.isStopped = true;
+        anim.SetTrigger("Die");
+
+        GetComponent<Collider>().enabled = false;
+        rb.isKinematic = true;
+
+        if (showDebugLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Enemy died</color>");
+        }
+
+        Destroy(gameObject, 3f);
+    }
+
+    public void ActiveTarget(bool active)
+    {
+        isTargeted = active;
+        if (targetIndicator)
+        {
+            targetIndicator.SetActive(active);
+        }
+
+        if (showDebugLogs)
+        {
+            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] " +
+                $"Target indicator {(active ? "activated" : "deactivated")}</color>");
+        }
+    }
+
+    public void SpawnHitVfx(Vector3 position)
+    {
+        if (hitEffectPrefab)
+        {
+            Instantiate(hitEffectPrefab, position, Quaternion.identity);
+
+            if (showDebugLogs)
+            {
+                Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Spawned hit VFX</color>");
+            }
+        }
+    }
+
+    private void SpawnHitEffect(Vector3 position)
+    {
+        if (hitEffectPrefab)
+        {
+            Instantiate(hitEffectPrefab, position, Quaternion.identity);
+        }
+    }
+
+    private void OnDrawGizmos()
+    {
+        if (!showDebugLogs) return;
+
+        // Attack range
+        if (attackPos != null)
+        {
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(attackPos.position, attackRange);
+        }
+
+        // Detection range
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, detectionRange);
+
+        // Draw line to player if in range
+        if (player != null)
+        {
+            float distanceToPlayer = Vector3.Distance(transform.position, player.position);
+            if (distanceToPlayer <= detectionRange)
+            {
+                Gizmos.color = Color.green;
+                Gizmos.DrawLine(transform.position, player.position);
+            }
+        }
+    }
 }
