@@ -23,10 +23,17 @@ public class EnemyBase : MonoBehaviour
     [SerializeField] private int heavyAttackDamage = 20;
 
     [Space]
+    [Header("Movement")]
+    [SerializeField] private float minSpeedToAnimate = 0.1f;
+    [SerializeField] private string speedParameterName = "Speed";
+    [SerializeField] private float stoppingDistance = 2f;
+
+    [Space]
     [Header("Debug")]
     [SerializeField] private bool showDebugLogs = true;
     [SerializeField] private bool showAnimationLogs = true;
     [SerializeField] private bool showCombatLogs = true;
+    [SerializeField] private bool showMovementDebug = true;
     [SerializeField] private Color debugTextColor = Color.yellow;
 
     [Space]
@@ -43,6 +50,37 @@ public class EnemyBase : MonoBehaviour
     private bool isTargeted;
     private string currentAnimationState = "Idle";
 
+    private void OnValidate()
+    {
+        // Auto-fetch components if they exist
+        if (!anim) anim = GetComponent<Animator>();
+        if (!agent) agent = GetComponent<NavMeshAgent>();
+        if (!rb) rb = GetComponent<Rigidbody>();
+
+        // Verify animator parameters
+        if (anim)
+        {
+            foreach (AnimatorControllerParameter param in anim.parameters)
+            {
+                if (param.name == speedParameterName)
+                {
+                    Debug.Log($"<color=green>Found {speedParameterName} parameter in Animator</color>");
+                    return;
+                }
+            }
+            Debug.LogError($"<color=red>Missing {speedParameterName} parameter in Animator!</color>");
+        }
+
+        // Create attack position if it doesn't exist
+        if (!attackPos)
+        {
+            GameObject attackPosObj = new GameObject("AttackPos");
+            attackPosObj.transform.parent = transform;
+            attackPosObj.transform.localPosition = new Vector3(0, 0, 1); // 1 unit in front
+            attackPos = attackPosObj.transform;
+        }
+    }
+
     private void Start()
     {
         InitializeComponents();
@@ -50,18 +88,24 @@ public class EnemyBase : MonoBehaviour
 
     private void InitializeComponents()
     {
-        if (!anim) anim = GetComponent<Animator>();
-        if (!agent) agent = GetComponent<NavMeshAgent>();
-        if (!rb) rb = GetComponent<Rigidbody>();
-
-        player = GameObject.FindGameObjectWithTag("Player").transform;
-        if (player == null && showDebugLogs)
+        // Setup NavMeshAgent
+        if (agent)
         {
-            Debug.LogError($"<color=red>[{gameObject.name}] Player not found! Make sure player has 'Player' tag.</color>");
+            agent.stoppingDistance = stoppingDistance;
+            agent.updateRotation = true;
+            agent.updatePosition = true;
         }
 
-        playerHealth = player?.GetComponent<PlayerHealth>();
-        if (playerHealth == null && showDebugLogs)
+        // Find player
+        player = GameObject.FindGameObjectWithTag("Player")?.transform;
+        if (!player && showDebugLogs)
+        {
+            Debug.LogError($"<color=red>[{gameObject.name}] Player not found! Make sure player has 'Player' tag.</color>");
+            return;
+        }
+
+        playerHealth = player.GetComponent<PlayerHealth>();
+        if (!playerHealth && showDebugLogs)
         {
             Debug.LogError($"<color=red>[{gameObject.name}] PlayerHealth component not found on player!</color>");
         }
@@ -81,7 +125,7 @@ public class EnemyBase : MonoBehaviour
 
     private void Update()
     {
-        if (isDead) return;
+        if (isDead || !player) return;
 
         float distanceToPlayer = Vector3.Distance(transform.position, player.position);
 
@@ -113,27 +157,47 @@ public class EnemyBase : MonoBehaviour
 
     private void ChasePlayer()
     {
+        if (!agent || !anim || !player) return;
+
         agent.isStopped = false;
         agent.SetDestination(player.position);
-        anim.SetFloat("Speed", agent.velocity.magnitude);
 
-        if (showDebugLogs)
+        // Smoothly update velocity to prevent sudden jumps
+        float targetSpeed = agent.velocity.magnitude;
+        float smoothedSpeed = Mathf.Lerp(anim.GetFloat(speedParameterName), targetSpeed, Time.deltaTime * 5f); // Adjust smoothing factor
+
+        // Normalize speed to match the blend tree range (0 to 6)
+        float normalizedSpeed = Mathf.Clamp(smoothedSpeed / agent.speed * 6f, 0f, 6f);
+
+        // Set animator speed parameter
+        anim.SetFloat(speedParameterName, normalizedSpeed);
+
+        if (showMovementDebug)
         {
-            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Chasing player, " +
-                $"Speed: {agent.velocity.magnitude:F2}</color>");
+            Debug.Log($"<color=yellow>[{gameObject.name} Movement] " +
+                $"\nActual Speed: {targetSpeed:F2}" +
+                $"\nSmoothed Speed: {smoothedSpeed:F2}" +
+                $"\nNormalized Speed: {normalizedSpeed:F2}" +
+                $"\nIs Moving: {targetSpeed > minSpeedToAnimate}" +
+                $"\nDestination Distance: {agent.remainingDistance:F2}" +
+                $"\nAgent State: {agent.pathStatus}</color>");
         }
     }
+
 
     private void StopMoving()
     {
-        agent.isStopped = true;
-        anim.SetFloat("Speed", 0);
+        if (!agent || !anim) return;
 
-        if (showDebugLogs)
+        agent.isStopped = true;
+        anim.SetFloat(speedParameterName, 0f);
+
+        if (showMovementDebug)
         {
-            Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Stopped moving</color>");
+            Debug.Log($"<color=yellow>[{gameObject.name} Movement] Stopped moving, speed set to 0</color>");
         }
     }
+
 
     private void PerformRandomAttack()
     {
@@ -227,6 +291,7 @@ public class EnemyBase : MonoBehaviour
         }
     }
 
+    // Called by animation events
     public void PerformAttack()
     {
         if (showDebugLogs && showCombatLogs)
@@ -241,8 +306,8 @@ public class EnemyBase : MonoBehaviour
         {
             if (playerCol.TryGetComponent(out PlayerHealth health))
             {
-                int damage = anim.GetBool("heavyAttack1") || anim.GetBool("heavyAttack2")
-                    ? heavyAttackDamage
+                int damage = anim.GetBool("heavyAttack1") || anim.GetBool("heavyAttack2") 
+                    ? heavyAttackDamage 
                     : quickAttackDamage;
 
                 health.TakeDamage(damage);
@@ -257,6 +322,7 @@ public class EnemyBase : MonoBehaviour
         }
     }
 
+    // Called by animation events
     public void ResetAttack()
     {
         anim.SetBool("punch", false);
@@ -288,7 +354,7 @@ public class EnemyBase : MonoBehaviour
         isDead = true;
         agent.isStopped = true;
         anim.SetTrigger("Die");
-
+        
         GetComponent<Collider>().enabled = false;
         rb.isKinematic = true;
 
@@ -296,7 +362,7 @@ public class EnemyBase : MonoBehaviour
         {
             Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Enemy died</color>");
         }
-
+        
         Destroy(gameObject, 3f);
     }
 
@@ -320,7 +386,7 @@ public class EnemyBase : MonoBehaviour
         if (hitEffectPrefab)
         {
             Instantiate(hitEffectPrefab, position, Quaternion.identity);
-
+            
             if (showDebugLogs)
             {
                 Debug.Log($"<color=#{ColorUtility.ToHtmlStringRGB(debugTextColor)}>[{gameObject.name}] Spawned hit VFX</color>");
